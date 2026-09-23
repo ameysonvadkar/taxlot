@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: rebalance-engine
+
+server:
+  port: 8083
+
+management:
+  endpoints:
+    web:
+      exposure:
+        # Health and info only. The prometheus endpoint is added in Phase 6 together with
+        # micrometer-registry-prometheus; listing it before the dependency exists would be
+        # config that silently does nothing.
+        include: health,info
+  endpoint:
+    health:
+      show-details: when-authorized
+
+springdoc:
+  swagger-ui:
+    path: /swagger-ui.html
+
+logging:
+  level:
+    com.taxlot: INFO

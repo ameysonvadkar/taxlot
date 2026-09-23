@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.taxlot</groupId>
+    <artifactId>taxlot-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>perf-tests</artifactId>
+  <name>perf-tests</name>
+  <description>
+    Gatling simulations for single-account and batch rebalance.
+    Wired up in Phase 6; empty until then. Kept out of the default build so `mvn verify`
+    stays fast — load tests run on demand, not on every commit.
+  </description>
+</project>

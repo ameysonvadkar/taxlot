@@ -1,0 +1,62 @@
+# Local development stack for TaxLot.
+#
+#   docker compose -f infra/docker-compose.yml up -d
+#   docker compose -f infra/docker-compose.yml down        # keeps data
+#   docker compose -f infra/docker-compose.yml down -v     # wipes data
+#
+# One Postgres database with three schemas rather than three databases: the services are
+# separately deployable but the data is one client's portfolio, and a rebalance has to read
+# lots and prices consistently. Schema separation keeps ownership clear while leaving the
+# door open to a single transaction if we ever need one.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: taxlot-postgres
+    environment:
+      POSTGRES_DB: taxlot
+      POSTGRES_USER: taxlot
+      POSTGRES_PASSWORD: taxlot
+    ports:
+      # Host port 55432, not 5432. This machine already runs a native PostgreSQL 17 as a
+      # system daemon on 5432, and binding over it would either fail or shadow a server
+      # another project depends on. The container still speaks 5432 internally, so nothing
+      # inside the compose network changes. Override with TAXLOT_PG_PORT if 55432 is taken.
+      - "${TAXLOT_PG_PORT:-55432}:5432"
+    volumes:
+      - taxlot-pgdata:/var/lib/postgresql/data
+      # Runs once, on an empty data directory only. If you change this file, you must
+      # `down -v` for it to take effect again.
+      - ./init-db.sql:/docker-entrypoint-initdb.d/01-init-db.sql:ro
+    healthcheck:
+      # Without -d and -U this passes while the server is still in its bootstrap phase,
+      # which makes dependent services start too early.
+      test: ["CMD-SHELL", "pg_isready -U taxlot -d taxlot"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    container_name: taxlot-redis
+    ports:
+      - "${TAXLOT_REDIS_PORT:-6379}:6379"
+    # appendonly keeps the cache across restarts. Prices are recomputable, but the
+    # per-account rebalance locks are not, and losing them mid-batch would allow two
+    # concurrent rebalances on one account.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - taxlot-redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+    restart: unless-stopped
+
+volumes:
+  taxlot-pgdata:
+  taxlot-redisdata:

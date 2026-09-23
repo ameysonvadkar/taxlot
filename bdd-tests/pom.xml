@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 https://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>com.taxlot</groupId>
+    <artifactId>taxlot-parent</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>bdd-tests</artifactId>
+  <name>bdd-tests</name>
+  <description>
+    Cucumber feature files, step definitions and Selenium page objects.
+    Wired up in Phase 4 (scenarios) and Phase 5 (UI flows); empty until then.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>com.taxlot</groupId>
+      <artifactId>common</artifactId>
+    </dependency>
+  </dependencies>
+</project>
