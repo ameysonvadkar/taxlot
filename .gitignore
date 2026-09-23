@@ -1,0 +1,33 @@
+# Java / Maven
+target/
+*.class
+*.jar
+!.mvn/wrapper/maven-wrapper.jar
+.mvn/timing.properties
+
+# IDE
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# Node / Vite
+node_modules/
+ui/dist/
+.vite/
+
+# Test + perf output
+**/build/reports/
+perf-tests/target/gatling/
+*.log
+
+# Secrets & local env
+.env
+.env.*
+*.pem
+aws-credentials*
+
+# macOS
+.DS_Store
