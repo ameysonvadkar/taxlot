@@ -105,6 +105,12 @@ that silently does nothing is worse than config that is absent.
 referenced by any test. Added `TermTest` pinning the constant names, which are the persisted values
 in `realized_gain.term` — renaming one would silently orphan existing rows. Coverage went to 100%.
 
+**4. CI actions were already deprecated on first run.**
+The first green run warned that `checkout@v4`, `setup-java@v4` and `upload-artifact@v4` target
+Node.js 20, which GitHub has deprecated and is already force-running on Node 24. Bumped all three to
+v5 while the workflow was still a single file. `upload-artifact@v5` still reports the Node 20
+warning — that is upstream's to fix, and it does not affect the build.
+
 ### Known, accepted for now
 
 - **Mockito/ByteBuddy dynamic agent warning.** JDK 21 warns `A Java agent has been loaded
