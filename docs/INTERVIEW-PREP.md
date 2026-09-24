@@ -233,3 +233,211 @@ profile intact while the loss is banked.
 total. Buying a same-sector but different company sidesteps it; buying AAPL back on day 20 does not.
 
 ---
+
+## Phase 1 — Market data service
+
+### Q12. Why does `RandomWalk` take the random shock as a parameter instead of generating it?
+
+**Answer.** Because it makes the maths a pure function.
+[RandomWalk.step(currentPrice, shock)](market-data-service/src/main/java/com/taxlot/marketdata/simulation/RandomWalk.java)
+owns the formula; the caller owns the `Random`. The consequences are practical:
+
+- Every test is deterministic — `step(100.00, 1.0)` with 1% volatility is *always* 101.0000, so the
+  assertions in `RandomWalkTest` are exact values, not ranges or statistical tolerances.
+- There is nothing to mock. No `Random` stub, no seeded fixture, no `@Mock` annotation.
+- Edge cases become trivially reachable. Testing the price floor means passing `shock = -1000.0`;
+  with internal randomness you would have to wait for a 1000-sigma event.
+
+**If they push back with "isn't that just pushing the problem to the caller?"** — yes, and that is
+the point. The caller ([PriceSimulator](market-data-service/src/main/java/com/taxlot/marketdata/service/PriceSimulator.java))
+is the layer that already deals with the outside world: the database, the clock, configuration. The
+randomness belongs with the other impurities, not tangled into the formula. It is the same principle
+that keeps `engine-core` free of Spring, applied at method scale.
+
+---
+
+### Q13. Why is the walk multiplicative rather than additive?
+
+**Answer.** `next = current * (1 + drift + volatility * shock)`, not `next = current + shock`.
+
+An additive walk moves every security by the same number of *dollars*. In this universe that means
+one shock moves META ($580) and PFE ($26) identically in absolute terms — a rounding error for one
+and a 7.7% swing for the other. It can also walk a price straight through zero into negative
+territory, which would then corrupt every market-value and weight calculation downstream rather than
+failing anywhere visible.
+
+A multiplicative walk moves everything in percentage terms, which is how prices actually behave, and
+stays positive for any sane shock. It is pinned by
+[RandomWalkTest.aOneSigmaShockMovesEveryPriceByTheSamePercentage](market-data-service/src/test/java/com/taxlot/marketdata/simulation/RandomWalkTest.java):
+a 1-sigma shock at 1% volatility takes 100 → 101 and 500 → 505.
+
+There is still a `FLOOR_PRICE` of $0.01 as a backstop, because a large enough negative shock can
+drive the growth factor negative.
+
+---
+
+### Q14. Your cache swallows Redis exceptions. Isn't that hiding failures?
+
+**Answer.** It logs them at WARN and then degrades. Every method in
+[PriceCache](market-data-service/src/main/java/com/taxlot/marketdata/service/PriceCache.java)
+catches `DataAccessException`: reads report a miss, writes are dropped, and the caller falls through
+to Postgres.
+
+The justification is specific to what is in this cache. Prices are always recomputable from the
+database — nothing in Redis is authoritative. So the question is: when Redis dies, should the price
+endpoint return correct data slowly, or return a 500? Returning 500 means a Redis outage takes down
+every rebalance in the system for data that was sitting in Postgres the whole time. A cache that
+takes the service down when it fails is worse than no cache.
+
+**If they push back with "how would you notice Redis was down, then?"** — the WARN logs, and from
+Phase 6 the Micrometer metrics: cache hit rate falling to zero is the signal. That is a monitoring
+concern, not a reason to fail user requests. The distinction to state is that **failing soft is only
+correct when the cached data is recomputable** — if Redis held the only copy of something, swallowing
+the error would be data loss, and the right answer would be the opposite.
+
+---
+
+### Q15. Tell me about a bug you found in your own code.
+
+This is the strongest answer in the project. Use the second one if they want depth.
+
+**The fail-soft cache would have thrown on the exact path it existed to protect.**
+`PriceCache.get` returns `Map.of()` when Redis is unreachable. `MarketDataService` then wrote the
+database results back into that map — which is immutable. So a Redis outage, the one scenario the
+whole design was built to survive, would have thrown `UnsupportedOperationException` and returned a
+500. Found in review, before committing. Fixed by copying into a mutable map, and pinned by
+[MarketDataServiceTest.aRedisOutageFallsThroughToTheDatabase](market-data-service/src/test/java/com/taxlot/marketdata/service/MarketDataServiceTest.java),
+which uses a mock precisely because a healthy container cannot reproduce the case that matters most.
+
+**The simulator was not actually random.** `new Random(seed)` was constructed *per call*, so every
+invocation drew the identical sequence of shocks. Calling `simulate(1)` repeatedly applied the same
+move to each security every single time — AAPL would step the same direction on every call. A
+systematic drift wearing a random walk's clothes. Fixed by mixing the starting date into the seed,
+which keeps each run reproducible while making consecutive runs genuinely different.
+
+**And then the regression test for it was wrong too.** The first version compared day-over-day price
+ratios at 10 decimal places — and *passed with the bug still present*. Prices are stored at 4 decimal
+places, so every step carries about 2e-7 of relative rounding noise, which is enough to make even
+identical shocks produce different ratios at that precision. The test was measuring rounding noise
+instead of the shock. Rounding the comparison to 5 decimal places puts the threshold well above the
+noise floor and far below a real 1.2% move.
+
+**The point to land:** a test that passes for the wrong reason is worse than no test, because it
+actively certifies broken behaviour. The only way to trust a regression test is to watch it fail
+against the bug it was written for — reintroduce the bug, confirm red, restore the fix, confirm
+green. That is recorded in [BUILD-LOG.md](docs/BUILD-LOG.md).
+
+---
+
+### Q16. Your integration tests share containers. Didn't that cause problems?
+
+**Answer.** Yes, twice, and both were worth the trade.
+
+[AbstractIntegrationTest](market-data-service/src/test/java/com/taxlot/marketdata/AbstractIntegrationTest.java)
+uses the **singleton container** pattern — Postgres and Redis start once in a static initialiser and
+are shared by every IT class. The alternative, JUnit's `@Testcontainers` lifecycle, starts a fresh
+pair per test class, costing seconds each time.
+
+The two failures:
+1. `PriceCacheIT` ran a simulation before `PriceSimulationIT` started, so the price history was
+   further along than that class assumed and its absolute-date assertions failed. Fixed by rewinding
+   price history to the seed date in `@BeforeAll` (`PER_CLASS` lifecycle so it can use injected beans).
+2. `PriceCacheIT` writes a deliberately fake price into Redis to prove reads go through the cache —
+   and did not clean it up. Another class then failed with `expected: 200.0000 but was: 1.2345`.
+   Fixed with `@AfterEach` eviction.
+
+**If they push back with "why not just isolate every test?"** — full isolation costs container
+startup per class, and the alternative to the rewind would have been dropping the exact-date
+assertions. Those assertions are the ones that catch a weekend-skipping regression: "the 30th trading
+day after a Friday is six calendar weeks later" is a real property worth pinning. The lesson I would
+actually state is narrower: **a test that deliberately corrupts shared state owns cleaning it up**,
+and "shared state" includes the cache, not just the database.
+
+---
+
+### Q17. Why did your integration tests fail with `ClassNotFoundException` on your own classes?
+
+**Answer.** Packaging, not code — and it is worth knowing because the error names nothing useful.
+The symptom was `TestEngine with ID 'junit-jupiter' failed to discover tests`; no test ran, and the
+real cause only appeared in the Failsafe dump file.
+
+`spring-boot-maven-plugin:repackage` **replaces** the module's main jar with an executable fat jar
+whose classes live under `BOOT-INF/classes`. Failsafe runs after `package` and resolves the module
+from that artifact, so every application class disappeared from the integration-test classpath.
+
+The fix in [pom.xml](pom.xml) is `<classifier>exec</classifier>`: the plain jar stays the main
+artifact (38 KB) and the runnable fat jar becomes `-exec.jar` (65 MB). It also matters for module
+dependencies — `rebalance-engine` depends on `engine-core`, and a fat jar is not usable as a library.
+
+**Rule of thumb worth quoting:** a `ClassNotFoundException` for your *own* classes during test
+discovery is almost always a packaging problem.
+
+---
+
+### Q18. Walk me through what happens on `GET /prices/latest?tickers=AAPL,MSFT`.
+
+**Answer.**
+1. [PriceController.latest](market-data-service/src/main/java/com/taxlot/marketdata/web/PriceController.java)
+   trims, uppercases and de-duplicates into a `LinkedHashSet` — `?tickers=aapl,AAPL` is one lookup,
+   not two, and insertion order is preserved so the response order is predictable.
+2. [MarketDataService.findLatestPrices](market-data-service/src/main/java/com/taxlot/marketdata/service/MarketDataService.java)
+   asks Redis for all of them in a single `HMGET`.
+3. Whatever missed is fetched from Postgres in **one** query, then written back to the cache.
+4. Results are reordered to match the caller's list. Unknown tickers are simply absent — not null
+   entries — because for a rebalance a missing price is an error and for an ad-hoc query it is not,
+   so the caller decides.
+
+The SQL behind step 3 uses a correlated subquery to find *each security's own* latest date, not one
+global maximum. The simulator currently advances every security together, so in practice the dates
+match — but a CSV load in Phase 7 could easily leave one security a day behind, and a global-max
+query would silently return nothing for it.
+
+---
+
+### Q19. Why does every security have a substitute when CLAUDE.md only lists 11 pairs?
+
+**Answer.** Because the named pairs leave 9 of the 30 securities (WFC, UNH, MCD, COP, SLB, EOG, HON,
+GE, UPS) with no substitute at all — and a security with no substitute **can never be tax-loss
+harvested**, because selling it would drop the client's market exposure with nothing to replace it.
+
+So [V2__seed_security_universe.sql](market-data-service/src/main/resources/db/migration/V2__seed_security_universe.sql)
+seeds CLAUDE.md's pairs at rank 1 and every other same-sector peer behind them. That is what the
+`rank` column exists for.
+
+Same-sector is the right fallback for a specific legal reason: a different company in the same sector
+is **not "substantially identical"** under the wash-sale rule, so the loss is still allowed, while
+the client keeps equivalent market exposure. Buying the same security back would be the wash sale.
+
+Two things are enforced in the schema rather than in code
+([V1](market-data-service/src/main/resources/db/migration/V1__create_security_price_substitute.sql)):
+`CHECK (security_id <> substitute_id)` makes a self-substitute impossible, and
+`UNIQUE (security_id, rank)` makes "the best substitute" deterministic — two rank-1 rows would make a
+rebalance non-reproducible, and a rebalance that cannot be reproduced cannot be audited.
+
+---
+
+### Q20. Why does the simulator skip weekends?
+
+**Answer.** Markets do not trade at weekends, and it costs four lines. The reason it actually matters
+is the wash-sale rule: that window is **30 calendar days**, applied against a **trading-day** price
+series. Having a price history that includes Saturdays would give the window a different shape in
+tests than in the rule being modelled, and the wash-sale boundary is precisely where a bug would
+hide.
+
+It is pinned by a date that was chosen deliberately: the seed anchor `2026-01-02` is a **Friday**, so
+the very first simulated day exercises the weekend skip — `simulate(1)` must land on Monday the 5th,
+not Saturday the 3rd.
+
+---
+
+### Q21. Anything surprising you ran into?
+
+A short, memorable one: `curl | python3 -m json.tool` displayed `"close": 200.0` where the database
+held `200.0000`. The API was fine — checking the raw bytes confirmed it returned `200.0000`. Python's
+JSON parser had coerced the number to a float and reformatted it.
+
+The precision survived Postgres, JPA, Jackson and Redis, and was destroyed by a *debugging tool*. It
+is an unusually on-the-nose demonstration of why this codebase keeps `BigDecimal` everywhere near
+money — and a reminder to check raw output when verifying financial values.
+
+---

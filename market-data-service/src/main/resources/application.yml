@@ -2,8 +2,54 @@ spring:
   application:
     name: market-data-service
 
+  datasource:
+    # Host port 55432, not 5432 — see infra/docker-compose.yml. A native PostgreSQL install
+    # already holds 5432 on the development machine.
+    url: jdbc:postgresql://${DB_HOST:localhost}:${DB_PORT:55432}/${DB_NAME:taxlot}
+    username: ${DB_USER:taxlot}
+    password: ${DB_PASSWORD:taxlot}
+    hikari:
+      maximum-pool-size: 10
+      # Fail fast rather than hanging a request for 30s when the database is down.
+      connection-timeout: 5000
+
+  jpa:
+    hibernate:
+      # Flyway owns the schema. `validate` means Hibernate checks the entities match the tables
+      # and refuses to start if they have drifted, but never alters anything itself.
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        default_schema: market_data
+        jdbc:
+          # Batches the per-day price inserts: a 30-day simulation writes 900 rows, and without
+          # batching that is 900 round trips.
+          batch_size: 100
+        order_inserts: true
+
+  flyway:
+    enabled: true
+    schemas: market_data
+    default-schema: market_data
+    locations: classpath:db/migration
+
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+      timeout: 2000ms
+
 server:
   port: 8081
+
+taxlot:
+  simulation:
+    daily-drift: 0.0003
+    daily-volatility: 0.012
+    # Fixed so a demo replays identically and a failing test can be reproduced.
+    # Remove to get a different price path on every run.
+    seed: 20260102
 
 management:
   endpoints:

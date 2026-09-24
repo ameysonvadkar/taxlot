@@ -97,6 +97,22 @@
           <groupId>org.springframework.boot</groupId>
           <artifactId>spring-boot-maven-plugin</artifactId>
           <version>${spring-boot.version}</version>
+          <configuration>
+            <!--
+              Publish the executable fat jar under a classifier, leaving the plain jar as the
+              module's main artifact.
+
+              Without this, `repackage` REPLACES the main jar with a fat jar whose classes live
+              under BOOT-INF/classes. Failsafe runs after `package` and resolves the module from
+              that artifact, so every application class disappears from the integration-test
+              classpath and the suite dies with a bare ClassNotFoundException during discovery —
+              a failure that looks nothing like its cause.
+
+              It also matters for module dependencies: rebalance-engine depends on engine-core,
+              and a fat jar is not usable as a library.
+            -->
+            <classifier>exec</classifier>
+          </configuration>
         </plugin>
       </plugins>
     </pluginManagement>
